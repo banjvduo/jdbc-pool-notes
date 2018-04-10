@@ -75,24 +75,28 @@ public class ConnectionPool {
     //         INSTANCE/QUICK ACCESS VARIABLE
     //===============================================================================
     /**
+     * 连接池里的连接总数
      * Carries the size of the pool, instead of relying on a queue implementation
      * that usually iterates over to get an exact count
      */
     private AtomicInteger size = new AtomicInteger(0);
 
     /**
+     * 连接池的所有信息,包含所有实例化的属性
      * All the information about the connection pool
      * These are the properties the pool got instantiated with
      */
     private PoolConfiguration poolProperties;
 
     /**
+     * 所有正在使用的连接
      * Contains all the connections that are in use
      * TODO - this shouldn't be a blocking queue, simply a list to hold our objects
      */
     private BlockingQueue<PooledConnection> busy;
 
     /**
+     * 所有空闲的连接
      * Contains all the idle connections
      */
     private BlockingQueue<PooledConnection> idle;
@@ -449,6 +453,7 @@ public class ConnectionPool {
             idle = new LinkedBlockingQueue<PooledConnection>();
         }
 
+        //初始化一个线程池清理器
         initializePoolCleaner(properties);
 
         //create JMX MBean
@@ -529,6 +534,7 @@ public class ConnectionPool {
         //if the evictor thread is supposed to run, start it now
         if (properties.isPoolSweeperEnabled()) {
             poolCleaner = new PoolCleaner(this, properties.getTimeBetweenEvictionRunsMillis());
+            //注册一个清理器
             poolCleaner.start();
         } //end if
     }
@@ -625,6 +631,7 @@ public class ConnectionPool {
     }
 
     /**
+     * 线程安全的从线程池中获取一个连接
      * Thread safe way to retrieve a connection from the pool
      * @param wait - time to wait, overrides the maxWait from the properties,
      * set to -1 if you wish to use maxWait, 0 if you wish no wait time.
@@ -645,6 +652,7 @@ public class ConnectionPool {
         while (true) {
             if (con!=null) {
                 //configure the connection and return it
+                //这里会将该连接放入正在使用的连接队列 busy 里
                 PooledConnection result = borrowConnection(now, con, username, password);
                 borrowedCount.incrementAndGet();
                 if (result!=null) return result;
@@ -654,17 +662,21 @@ public class ConnectionPool {
             //this is not 100% accurate since it doesn't use a shared
             //atomic variable - a connection can become idle while we are creating
             //a new connection
+            //连接池总数小于最大值
             if (size.get() < getPoolProperties().getMaxActive()) {
                 //atomic duplicate check
+                //连接池总数大于最大值了,╮(╯﹏╰)╭不好意思,给我退回去
                 if (size.addAndGet(1) > getPoolProperties().getMaxActive()) {
                     //if we got here, two threads passed through the first if
                     size.decrementAndGet();
                 } else {
+                    //没超过限制当然可以创建一个新的连接啦
                     //create a connection, we're below the limit
                     return createConnection(now, con, username, password);
                 }
             } //end if
 
+            //能走到这里说明连接池总数达到上限了,当然得等待了
             //calculate wait time for this iteration
             long maxWait = wait;
             //if the passed in wait time is -1, means we should use the pool property value
@@ -676,6 +688,7 @@ public class ConnectionPool {
             waitcount.incrementAndGet();
             try {
                 //retrieve an existing connection
+                //等待并获取空闲连接,如果可用,将在下次循环时进行检查并放入 busy 队列
                 con = idle.poll(timetowait, TimeUnit.MILLISECONDS);
             } catch (InterruptedException ex) {
                 if (getPoolProperties().getPropagateInterruptState()) {
@@ -926,6 +939,7 @@ public class ConnectionPool {
                     if (!shouldClose(con,PooledConnection.VALIDATE_RETURN)) {
                         con.setStackTrace(null);
                         con.setTimestamp(System.currentTimeMillis());
+                        //这个判断写得很长,我翻译成人话就是:空闲数目如果小于最大空闲数或者线程池清扫器开了,那么就可以将该连接放入 idle 队列
                         if (((idle.size()>=poolProperties.getMaxIdle()) && !poolProperties.isPoolSweeperEnabled()) || (!idle.offer(con))) {
                             if (log.isDebugEnabled()) {
                                 log.debug("Connection ["+con+"] will be closed and not returned to the pool, idle["+idle.size()+"]>=maxIdle["+poolProperties.getMaxIdle()+"] idle.offer failed.");
